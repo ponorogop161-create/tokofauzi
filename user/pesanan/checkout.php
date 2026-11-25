@@ -154,7 +154,7 @@ require __DIR__ . "/../header.php";
 
                     <?php if ($qrTersedia): ?>
                         <img class="qris-image"
-                             src="<?= BASE_URL ?>assets/images/qris-tokoku.png"
+                             src="<?= BASE_URL ?>uploads/qris/qris-tokoku.jpeg"
                              alt="QRIS TokoKu">
                     <?php else: ?>
                         <p>Gambar QRIS belum tersedia. Admin dapat menambahkannya nanti.</p>

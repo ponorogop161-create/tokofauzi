@@ -7,6 +7,8 @@ wajib_kasir();
 
 $idUser = (int)($_SESSION['id_user'] ?? 0);
 
+$judul = "Riwayat Transaksi";
+
 // Filter pencarian
 $cari = trim($_GET['cari'] ?? '');
 $tanggalMulai = trim($_GET['mulai'] ?? '');
@@ -17,17 +19,23 @@ $batas = 10;
 $offset = ($halaman - 1) * $batas;
 
 // Validasi tanggal
-if ($tanggalMulai !== '' &&
-    !DateTime::createFromFormat('Y-m-d', $tanggalMulai)) {
-    $tanggalMulai = '';
+function validasiTanggalRiwayat($tanggal) {
+    if ($tanggal === '') {
+        return '';
+    }
+
+    $date = DateTime::createFromFormat('!Y-m-d', $tanggal);
+
+    return ($date && $date->format('Y-m-d') === $tanggal)
+        ? $tanggal
+        : '';
 }
 
-if ($tanggalAkhir !== '' &&
-    !DateTime::createFromFormat('Y-m-d', $tanggalAkhir)) {
-    $tanggalAkhir = '';
-}
+$tanggalMulai = validasiTanggalRiwayat($tanggalMulai);
+$tanggalAkhir = validasiTanggalRiwayat($tanggalAkhir);
 
 // Susun kondisi query
+// Hanya menampilkan transaksi milik kasir yang login
 $kondisi = " WHERE t.id_user = ?";
 $types = "i";
 $params = [$idUser];
@@ -39,6 +47,7 @@ if ($cari !== '') {
     )";
 
     $keyword = "%" . $cari . "%";
+
     $types .= "ss";
     $params[] = $keyword;
     $params[] = $keyword;
@@ -46,12 +55,14 @@ if ($cari !== '') {
 
 if ($tanggalMulai !== '') {
     $kondisi .= " AND DATE(t.tanggal) >= ?";
+
     $types .= "s";
     $params[] = $tanggalMulai;
 }
 
 if ($tanggalAkhir !== '') {
     $kondisi .= " AND DATE(t.tanggal) <= ?";
+
     $types .= "s";
     $params[] = $tanggalAkhir;
 }
@@ -84,10 +95,21 @@ function jalankanQuery(mysqli $conn, string $sql, string $types, array $params):
 $sqlStatistik = "
     SELECT
         COUNT(*) AS jumlah_transaksi,
-        COALESCE(SUM(t.total_belanja), 0) AS total_penjualan
+
+        COALESCE(SUM(
+            CASE
+                WHEN t.status_pembayaran = 'lunas'
+                     AND t.status <> 'dibatalkan'
+                THEN t.total_belanja
+                ELSE 0
+            END
+        ), 0) AS total_penjualan
+
     FROM tbl_transaksi t
+
     LEFT JOIN tbl_pelanggan p
         ON t.id_pelanggan = p.id_pelanggan
+
     $kondisi
 ";
 
@@ -118,12 +140,19 @@ $sql = "
         t.total_belanja,
         t.uang_diterima,
         t.kembalian,
+        t.status,
+        t.status_pembayaran,
         p.nama_pelanggan
+
     FROM tbl_transaksi t
+
     LEFT JOIN tbl_pelanggan p
         ON t.id_pelanggan = p.id_pelanggan
+
     $kondisi
+
     ORDER BY t.id_transaksi DESC
+
     LIMIT ? OFFSET ?
 ";
 
@@ -177,7 +206,7 @@ require_once "../header.php";
     <div class="kasir-stat-card">
         <div class="kasir-stat-icon">Rp</div>
         <div>
-            <p>Total Penjualan</p>
+            <p>Total Penjualan (Lunas)</p>
             <h2><?= rupiah($statistik['total_penjualan']) ?></h2>
         </div>
     </div>
@@ -259,6 +288,7 @@ require_once "../header.php";
                     <th>Tanggal</th>
                     <th>Pelanggan</th>
                     <th>Total</th>
+                    <th>Status Pembayaran</th>
                     <th>Tunai</th>
                     <th>Kembalian</th>
                     <th>Aksi</th>
@@ -291,12 +321,28 @@ require_once "../header.php";
                             </td>
 
                             <td>
-                                <strong><?= rupiah($row['total_belanja']) ?></strong>
+                                <strong>
+                                    <?= rupiah($row['total_belanja']) ?>
+                                </strong>
                             </td>
 
-                            <td><?= rupiah($row['uang_diterima']) ?></td>
+                            <td>
+                                <?= e(ucfirst(
+                                    str_replace(
+                                        '_',
+                                        ' ',
+                                        $row['status_pembayaran'] ?? '-'
+                                    )
+                                )) ?>
+                            </td>
 
-                            <td><?= rupiah($row['kembalian']) ?></td>
+                            <td>
+                                <?= rupiah($row['uang_diterima'] ?? 0) ?>
+                            </td>
+
+                            <td>
+                                <?= rupiah($row['kembalian'] ?? 0) ?>
+                            </td>
 
                             <td>
                                 <a
@@ -311,7 +357,7 @@ require_once "../header.php";
 
                 <?php else: ?>
                     <tr>
-                        <td colspan="8" class="riwayat-empty">
+                        <td colspan="9" class="riwayat-empty">
                             <div>▤</div>
                             <strong>Belum ada transaksi</strong>
                             <p>Transaksi yang kamu lakukan akan muncul di sini.</p>
@@ -336,7 +382,9 @@ require_once "../header.php";
 
             <?php if ($halaman > 1): ?>
                 <a href="?<?= e(http_build_query(
-                    array_merge($queryFilter, ['halaman' => $halaman - 1])
+                    array_merge($queryFilter, [
+                        'halaman' => $halaman - 1
+                    ])
                 )) ?>">
                     &laquo; Sebelumnya
                 </a>
@@ -348,7 +396,9 @@ require_once "../header.php";
 
             <?php if ($halaman < $totalHalaman): ?>
                 <a href="?<?= e(http_build_query(
-                    array_merge($queryFilter, ['halaman' => $halaman + 1])
+                    array_merge($queryFilter, [
+                        'halaman' => $halaman + 1
+                    ])
                 )) ?>">
                     Berikutnya &raquo;
                 </a>

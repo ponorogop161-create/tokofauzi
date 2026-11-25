@@ -10,6 +10,10 @@ $judul = "Laporan Penjualan";
 $dari = $_GET['dari'] ?? date('Y-m-01');
 $sampai = $_GET['sampai'] ?? date('Y-m-d');
 
+// Pengaturan pagination
+$batas = 10;
+$halaman = max(1, (int)($_GET['halaman'] ?? 1));
+
 function tanggalValid($tanggal) {
     $date = DateTime::createFromFormat('Y-m-d', $tanggal);
     return $date && $date->format('Y-m-d') === $tanggal;
@@ -18,6 +22,7 @@ function tanggalValid($tanggal) {
 if (!tanggalValid($dari) || !tanggalValid($sampai) || $dari > $sampai) {
     $dari = date('Y-m-01');
     $sampai = date('Y-m-d');
+    $halaman = 1;
 }
 
 // Ringkasan laporan
@@ -52,7 +57,7 @@ $dataGrafik = [];
 
 while ($row = $resultGrafik->fetch_assoc()) {
     $labels[] = date('d/m/Y', strtotime($row['tanggal']));
-    $dataGrafik[] = (float) $row['pendapatan'];
+    $dataGrafik[] = (float)$row['pendapatan'];
 }
 $stmt->close();
 
@@ -75,7 +80,23 @@ $stmt->execute();
 $produkTerlaris = $stmt->get_result();
 $stmt->close();
 
-// Daftar transaksi
+// Menghitung total riwayat transaksi
+$stmt = $conn->prepare("
+    SELECT COUNT(*) AS total
+    FROM tbl_transaksi
+    WHERE DATE(tanggal) BETWEEN ? AND ?
+");
+$stmt->bind_param("ss", $dari, $sampai);
+$stmt->execute();
+$totalRiwayat = (int)$stmt->get_result()->fetch_assoc()['total'];
+$stmt->close();
+
+// Menghitung jumlah halaman
+$totalHalaman = max(1, (int)ceil($totalRiwayat / $batas));
+$halaman = min($halaman, $totalHalaman);
+$mulai = ($halaman - 1) * $batas;
+
+// Daftar transaksi sesuai halaman
 $stmt = $conn->prepare("
     SELECT
         t.id_transaksi,
@@ -89,12 +110,21 @@ $stmt = $conn->prepare("
     LEFT JOIN tbl_users u
         ON u.id_user = t.id_user
     WHERE DATE(t.tanggal) BETWEEN ? AND ?
-    ORDER BY t.tanggal DESC
+    ORDER BY t.tanggal DESC, t.id_transaksi DESC
+    LIMIT ? OFFSET ?
 ");
-$stmt->bind_param("ss", $dari, $sampai);
+$stmt->bind_param("ssii", $dari, $sampai, $batas, $mulai);
 $stmt->execute();
 $transaksi = $stmt->get_result();
-$stmt->close();
+
+// URL pagination dengan mempertahankan tanggal
+function linkHalaman($nomor, $dari, $sampai) {
+    return "index.php?" . http_build_query([
+        'dari' => $dari,
+        'sampai' => $sampai,
+        'halaman' => $nomor
+    ]);
+}
 
 require_once __DIR__ . "/../header.php";
 ?>
@@ -171,6 +201,7 @@ require_once __DIR__ . "/../header.php";
     </div>
 </div>
 
+<!-- Grafik Penjualan -->
 <div class="panel" style="margin-top:25px;">
     <div class="card-header">
         <div>
@@ -184,6 +215,7 @@ require_once __DIR__ . "/../header.php";
     </div>
 </div>
 
+<!-- Produk Terlaris -->
 <div class="panel" style="margin-top:25px;">
     <div class="card-header">
         <div>
@@ -225,6 +257,7 @@ require_once __DIR__ . "/../header.php";
     </div>
 </div>
 
+<!-- Riwayat Transaksi -->
 <div class="panel" style="margin-top:25px;">
     <div class="card-header">
         <div>
@@ -248,7 +281,7 @@ require_once __DIR__ . "/../header.php";
                 <?php if ($transaksi->num_rows > 0): ?>
                     <?php while ($row = $transaksi->fetch_assoc()): ?>
                         <tr>
-                            <td>#<?= e($row['id_transaksi']) ?></td>
+                            <td>#<?= (int)$row['id_transaksi'] ?></td>
                             <td><?= date('d/m/Y', strtotime($row['tanggal'])) ?></td>
                             <td><?= e($row['nama_pelanggan'] ?? 'Umum') ?></td>
                             <td><?= e($row['nama_kasir'] ?? '-') ?></td>
@@ -265,7 +298,150 @@ require_once __DIR__ . "/../header.php";
             </tbody>
         </table>
     </div>
+
+    <!-- Pagination -->
+    <?php if ($totalRiwayat > 0): ?>
+        <div class="pagination-container">
+
+            <div class="pagination-info">
+                Menampilkan
+                <?= $mulai + 1 ?>
+                -
+                <?= min($mulai + $batas, $totalRiwayat) ?>
+                dari
+                <?= number_format($totalRiwayat, 0, ',', '.') ?>
+                transaksi
+            </div>
+
+            <div class="pagination">
+
+                <?php if ($halaman > 1): ?>
+                    <a href="<?= e(linkHalaman($halaman - 1, $dari, $sampai)) ?>"
+                       class="page-link">
+                        &laquo; Sebelumnya
+                    </a>
+                <?php else: ?>
+                    <span class="page-link disabled">
+                        &laquo; Sebelumnya
+                    </span>
+                <?php endif; ?>
+
+                <?php
+                $awal = max(1, $halaman - 2);
+                $akhir = min($totalHalaman, $halaman + 2);
+                ?>
+
+                <?php if ($awal > 1): ?>
+                    <a href="<?= e(linkHalaman(1, $dari, $sampai)) ?>"
+                       class="page-link">1</a>
+
+                    <?php if ($awal > 2): ?>
+                        <span class="page-dots">...</span>
+                    <?php endif; ?>
+                <?php endif; ?>
+
+                <?php for ($i = $awal; $i <= $akhir; $i++): ?>
+                    <a href="<?= e(linkHalaman($i, $dari, $sampai)) ?>"
+                       class="page-link <?= $i == $halaman ? 'active' : '' ?>">
+                        <?= $i ?>
+                    </a>
+                <?php endfor; ?>
+
+                <?php if ($akhir < $totalHalaman): ?>
+                    <?php if ($akhir < $totalHalaman - 1): ?>
+                        <span class="page-dots">...</span>
+                    <?php endif; ?>
+
+                    <a href="<?= e(linkHalaman($totalHalaman, $dari, $sampai)) ?>"
+                       class="page-link">
+                        <?= $totalHalaman ?>
+                    </a>
+                <?php endif; ?>
+
+                <?php if ($halaman < $totalHalaman): ?>
+                    <a href="<?= e(linkHalaman($halaman + 1, $dari, $sampai)) ?>"
+                       class="page-link">
+                        Selanjutnya &raquo;
+                    </a>
+                <?php else: ?>
+                    <span class="page-link disabled">
+                        Selanjutnya &raquo;
+                    </span>
+                <?php endif; ?>
+
+            </div>
+        </div>
+    <?php endif; ?>
 </div>
+
+<style>
+.pagination-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+    margin-top: 20px;
+    padding: 15px 0;
+}
+
+.pagination-info {
+    font-size: 13px;
+    color: #64748b;
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.page-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    padding: 8px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    text-decoration: none;
+    color: #334155;
+    background: #fff;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.page-link:hover {
+    background: #eff6ff;
+    border-color: #2563eb;
+    color: #2563eb;
+}
+
+.page-link.active {
+    background: #2563eb;
+    border-color: #2563eb;
+    color: #fff;
+}
+
+.page-link.disabled {
+    color: #94a3b8;
+    background: #f8fafc;
+    cursor: not-allowed;
+}
+
+.page-dots {
+    padding: 0 4px;
+    color: #64748b;
+}
+
+@media (max-width: 600px) {
+    .pagination-container {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+</style>
 
 <script>
 const labelsPenjualan = <?= json_encode($labels, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>;
@@ -320,4 +496,7 @@ new Chart(canvas, {
 });
 </script>
 
-<?php require_once __DIR__ . "/../../includes/footer.php"; ?>
+<?php
+$stmt->close();
+require_once __DIR__ . "/../../includes/footer.php";
+?>

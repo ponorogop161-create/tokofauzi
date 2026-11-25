@@ -1,4 +1,3 @@
-
 <?php
 $menu = [
     ['Dashboard', 'admin/index.php', '⌂'],
@@ -7,6 +6,7 @@ $menu = [
     ['Pelanggan', 'admin/pelanggan/index.php', '♙'],
     ['Cabang', 'admin/cabang/index.php', '⌖'],
     ['Akun Pengguna', 'admin/akun/index.php', '♧'],
+    ['Pengaturan Kartu RFID', 'admin/pengguna/rfid.php', '▤'],
     ['Transaksi', 'admin/transaksi/index.php', '▤'],
     ['Laporan', 'admin/laporan/index.php', '▥'],
     ['Aktivitas', 'admin/aktivitas/index.php', '◷']
@@ -24,11 +24,13 @@ $currentPage = $_SERVER['REQUEST_URI'];
         $url = BASE_URL . $item[1];
         $active = strpos($currentPage, $item[1]) !== false;
         ?>
+
         <a class="menu-item <?= $active ? 'active' : '' ?>"
            href="<?= e($url) ?>">
             <span><?= $item[2] ?></span>
             <?= e($item[0]) ?>
         </a>
+
     <?php endforeach; ?>
 
     <div class="sidebar-bottom">

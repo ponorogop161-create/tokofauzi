@@ -2,6 +2,7 @@
 <?php
 require_once __DIR__ . "/../../config/koneksi.php";
 require_once __DIR__ . "/../../config/auth.php";
+
 wajib_user();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -17,14 +18,20 @@ $noHp = trim($_POST['no_hp'] ?? '');
 $kota = trim($_POST['kota'] ?? '');
 $alamat = trim($_POST['alamat_pengiriman'] ?? '');
 $metode = $_POST['metode_pembayaran'] ?? '';
+
 $idCabang = null;
 $bukti = null;
 $fileTersimpan = null;
+$transaksiDimulai = false;
 
 function kembaliCheckout(string $pesan): never {
     header("Location: checkout.php?error=" . urlencode($pesan));
     exit;
 }
+
+// =====================================
+// VALIDASI DATA
+// =====================================
 
 if (!$idUser || !$nama || !$noHp || empty($keranjang)) {
     kembaliCheckout("Data pesanan belum lengkap.");
@@ -38,6 +45,10 @@ if (!in_array($metode, ['QRIS', 'COD', 'KASIR'], true)) {
     kembaliCheckout("Metode pembayaran tidak valid.");
 }
 
+// =====================================
+// VALIDASI CABANG KASIR
+// =====================================
+
 if ($metode === 'KASIR') {
     $idCabang = (int)($_POST['id_cabang'] ?? 0);
 
@@ -47,11 +58,15 @@ if ($metode === 'KASIR') {
 
     $stmt = $conn->prepare(
         "SELECT id_cabang, nama_cabang, kota
-         FROM tbl_cabang WHERE id_cabang = ?"
+         FROM tbl_cabang
+         WHERE id_cabang = ?"
     );
+
     $stmt->bind_param("i", $idCabang);
     $stmt->execute();
+
     $cabang = $stmt->get_result()->fetch_assoc();
+
     $stmt->close();
 
     if (!$cabang) {
@@ -59,15 +74,22 @@ if ($metode === 'KASIR') {
     }
 
     $kota = $cabang['kota'];
+
     $alamat = "Pembayaran langsung di kasir cabang " .
               $cabang['nama_cabang'];
+
 } else {
     if (!$kota || !$alamat) {
         kembaliCheckout("Kota dan alamat pengiriman wajib diisi.");
     }
 }
 
+// =====================================
+// UPLOAD BUKTI PEMBAYARAN QRIS
+// =====================================
+
 if ($metode === 'QRIS') {
+
     if (
         !isset($_FILES['bukti_pembayaran']) ||
         $_FILES['bukti_pembayaran']['error'] !== UPLOAD_ERR_OK
@@ -91,37 +113,74 @@ if ($metode === 'QRIS') {
     ];
 
     if (!isset($ekstensiDiizinkan[$mime])) {
-        kembaliCheckout("Bukti pembayaran harus berupa JPG, PNG, atau WEBP.");
+        kembaliCheckout(
+            "Bukti pembayaran harus berupa JPG, PNG, atau WEBP."
+        );
     }
 
     $folder = __DIR__ . "/../../assets/uploads/pembayaran/";
 
     if (!is_dir($folder) && !mkdir($folder, 0755, true)) {
-        kembaliCheckout("Folder upload bukti pembayaran gagal dibuat.");
+        kembaliCheckout(
+            "Folder upload bukti pembayaran gagal dibuat."
+        );
     }
 
     $namaFile = "qris_" . $idUser . "_" .
                 bin2hex(random_bytes(8)) . "." .
                 $ekstensiDiizinkan[$mime];
 
-    if (!move_uploaded_file($file['tmp_name'], $folder . $namaFile)) {
+    $fileTersimpan = $folder . $namaFile;
+
+    if (!move_uploaded_file($file['tmp_name'], $fileTersimpan)) {
+        $fileTersimpan = null;
         kembaliCheckout("Gagal menyimpan bukti pembayaran.");
     }
 
     $bukti = "assets/uploads/pembayaran/" . $namaFile;
-    $fileTersimpan = $folder . $namaFile;
 }
 
-try {
-    $conn->begin_transaction();
+// =====================================
+// STATUS AWAL PEMBAYARAN
+// =====================================
 
-    // Cari akun dan hubungan pelanggan.
+if ($metode === 'QRIS') {
+    // Menunggu pemeriksaan dan persetujuan Admin.
+    $statusPembayaran = 'menunggu_verifikasi';
+
+} elseif ($metode === 'COD') {
+    // Belum dibayar karena pembayaran saat barang diterima.
+    $statusPembayaran = 'belum_bayar';
+
+} else {
+    // Belum dibayar karena pelanggan membayar langsung di kasir.
+    $statusPembayaran = 'belum_bayar';
+}
+
+$statusPesanan = 'menunggu';
+
+// =====================================
+// PROSES TRANSAKSI
+// =====================================
+
+try {
+
+    $conn->begin_transaction();
+    $transaksiDimulai = true;
+
+    // Ambil data akun pembeli.
     $stmt = $conn->prepare(
-        "SELECT id_pelanggan FROM tbl_users WHERE id_user = ? LIMIT 1"
+        "SELECT id_pelanggan
+         FROM tbl_users
+         WHERE id_user = ?
+         LIMIT 1"
     );
+
     $stmt->bind_param("i", $idUser);
     $stmt->execute();
+
     $akun = $stmt->get_result()->fetch_assoc();
+
     $stmt->close();
 
     if (!$akun) {
@@ -130,38 +189,57 @@ try {
 
     $idPelanggan = (int)($akun['id_pelanggan'] ?? 0);
 
+    // =====================================
+    // DATA PELANGGAN
+    // =====================================
+
     if ($idPelanggan <= 0) {
+
         $stmt = $conn->prepare(
-            "INSERT INTO tbl_pelanggan (nama_pelanggan, kota)
+            "INSERT INTO tbl_pelanggan
+             (nama_pelanggan, kota)
              VALUES (?, ?)"
         );
+
         $stmt->bind_param("ss", $nama, $kota);
         $stmt->execute();
+
         $idPelanggan = $conn->insert_id;
+
         $stmt->close();
 
         $stmt = $conn->prepare(
-            "UPDATE tbl_users SET id_pelanggan = ? WHERE id_user = ?"
+            "UPDATE tbl_users
+             SET id_pelanggan = ?
+             WHERE id_user = ?"
         );
+
         $stmt->bind_param("ii", $idPelanggan, $idUser);
         $stmt->execute();
         $stmt->close();
+
     } else {
+
         $stmt = $conn->prepare(
             "UPDATE tbl_pelanggan
              SET nama_pelanggan = ?, kota = ?
              WHERE id_pelanggan = ?"
         );
+
         $stmt->bind_param("ssi", $nama, $kota, $idPelanggan);
         $stmt->execute();
         $stmt->close();
     }
 
-    // Periksa stok terbaru dan hitung total dari database.
+    // =====================================
+    // CEK STOK DAN HITUNG TOTAL
+    // =====================================
+
     $items = [];
     $total = 0;
 
     foreach ($keranjang as $id => $jumlah) {
+
         $id = (int)$id;
         $jumlah = (int)$jumlah;
 
@@ -175,20 +253,25 @@ try {
              WHERE id_produk = ?
              FOR UPDATE"
         );
+
         $stmt->bind_param("i", $id);
         $stmt->execute();
+
         $produk = $stmt->get_result()->fetch_assoc();
+
         $stmt->close();
 
         if (!$produk || $jumlah > (int)$produk['stok']) {
             throw new Exception(
-                "Stok " . ($produk['nama_produk'] ?? 'produk') .
+                "Stok " .
+                ($produk['nama_produk'] ?? 'produk') .
                 " tidak mencukupi."
             );
         }
 
         $harga = (float)$produk['harga'];
         $subtotal = $harga * $jumlah;
+
         $total += $subtotal;
 
         $items[] = [
@@ -200,24 +283,24 @@ try {
         ];
     }
 
-    // Tentukan status awal pembayaran.
-    if ($metode === 'QRIS') {
-    $statusPembayaran = 'menunggu_verifikasi';
-} elseif ($metode === 'KASIR') {
-    $statusPembayaran = 'lunas';
-} else {
-    $statusPembayaran = 'belum_bayar';
-}
-
-    $statusPesanan = 'menunggu';
+    // =====================================
+    // SIMPAN TRANSAKSI
+    // =====================================
 
     $stmt = $conn->prepare(
         "INSERT INTO tbl_transaksi
         (
-            tanggal, id_pelanggan, total_belanja, id_user,
-            alamat_pengiriman, no_hp, metode_pembayaran,
-            status_pembayaran, status_pesanan,
-            bukti_pembayaran, id_cabang
+            tanggal,
+            id_pelanggan,
+            total_belanja,
+            id_user,
+            alamat_pengiriman,
+            no_hp,
+            metode_pembayaran,
+            status_pembayaran,
+            status_pesanan,
+            bukti_pembayaran,
+            id_cabang
         )
         VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
@@ -237,23 +320,37 @@ try {
     );
 
     $stmt->execute();
+
     $idTransaksi = $conn->insert_id;
+
     $stmt->close();
 
-    // Simpan detail dan kurangi stok produk.
+    // =====================================
+    // SIMPAN DETAIL TRANSAKSI
+    // =====================================
+
     $stmtDetail = $conn->prepare(
         "INSERT INTO tbl_detail_transaksi
-        (id_transaksi, nama_produk, jumlah, harga, id_produk, subtotal)
+        (
+            id_transaksi,
+            nama_produk,
+            jumlah,
+            harga,
+            id_produk,
+            subtotal
+        )
         VALUES (?, ?, ?, ?, ?, ?)"
     );
 
     $stmtStok = $conn->prepare(
         "UPDATE tbl_produk
          SET stok = stok - ?
-         WHERE id_produk = ? AND stok >= ?"
+         WHERE id_produk = ?
+         AND stok >= ?"
     );
 
     foreach ($items as $item) {
+
         $stmtDetail->bind_param(
             "isidid",
             $idTransaksi,
@@ -263,6 +360,7 @@ try {
             $item['id_produk'],
             $item['subtotal']
         );
+
         $stmtDetail->execute();
 
         $stmtStok->bind_param(
@@ -271,25 +369,40 @@ try {
             $item['id_produk'],
             $item['jumlah']
         );
+
         $stmtStok->execute();
 
         if ($stmtStok->affected_rows !== 1) {
-            throw new Exception("Gagal memperbarui stok produk.");
+            throw new Exception(
+                "Gagal memperbarui stok produk."
+            );
         }
     }
 
     $stmtDetail->close();
     $stmtStok->close();
 
+    // =====================================
+    // SELESAI
+    // =====================================
+
     $conn->commit();
+    $transaksiDimulai = false;
 
     unset($_SESSION['keranjang']);
 
-    header("Location: detail.php?id=" . $idTransaksi . "&berhasil=1");
+    header(
+        "Location: detail.php?id=" .
+        $idTransaksi . "&berhasil=1"
+    );
+
     exit;
 
 } catch (Throwable $e) {
-    $conn->rollback();
+
+    if ($transaksiDimulai) {
+        $conn->rollback();
+    }
 
     if ($fileTersimpan && is_file($fileTersimpan)) {
         unlink($fileTersimpan);

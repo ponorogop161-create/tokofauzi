@@ -1,4 +1,3 @@
-
 <?php
 require_once "config/auth.php";
 require_once "config/koneksi.php";
@@ -57,8 +56,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Login | TokoKu</title>
+
     <link rel="stylesheet" href="assets/css/style.css">
 </head>
+
 <body class="auth-body">
 
 <div class="auth-container">
@@ -75,7 +76,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
         <?php endif; ?>
 
+        <!-- LOGIN USERNAME DAN PASSWORD -->
         <form method="POST">
+
             <label>Username</label>
             <input
                 type="text"
@@ -97,16 +100,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <button class="btn btn-primary btn-full" type="submit">
                 Masuk
             </button>
+
         </form>
 
+        <!-- LOGIN RFID -->
+        <a href="<?= BASE_URL ?>login_rfid.php"
+           class="btn btn-secondary btn-full"
+           style="display:block;text-align:center;margin-top:12px;box-sizing:border-box;">
+            🪪 Login dengan RFID
+        </a>
+
+        <!-- REGISTER -->
         <p class="auth-bottom">
             Belum punya akun?
             <a href="register.php">Daftar sebagai pembeli</a>
         </p>
-
-        <a href="index.php" class="back-link">
-            Kembali ke halaman utama
-        </a>
 
     </div>
 </div>

@@ -1,28 +1,31 @@
-
 <?php
 require_once "config/auth.php";
 
 if (!isset($_SESSION['id_user'])) {
-    header("Location: login.php");
+    header("Location: " . BASE_URL . "login.php");
     exit;
 }
 
-switch ($_SESSION['role']) {
+$role = $_SESSION['role'] ?? '';
+
+switch ($role) {
+
     case 'admin':
-        header("Location: admin/index.php");
-        break;
+        header("Location: " . BASE_URL . "admin/index.php");
+        exit;
 
     case 'kasir':
-        header("Location: kasir/index.php");
-        break;
+        header("Location: " . BASE_URL . "kasir/index.php");
+        exit;
 
     case 'user':
-        header("Location: user/index.php");
-        break;
+        header("Location: " . BASE_URL . "user/index.php");
+        exit;
 
     default:
+        session_unset();
         session_destroy();
-        header("Location: login.php");
-        break;
+
+        header("Location: " . BASE_URL . "login.php");
+        exit;
 }
-exit;

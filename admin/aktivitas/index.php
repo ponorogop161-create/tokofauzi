@@ -11,6 +11,10 @@ $kataKunci = trim($_GET['cari'] ?? '');
 $dari = $_GET['dari'] ?? '';
 $sampai = $_GET['sampai'] ?? '';
 
+// Pengaturan pagination
+$batas = 10;
+$halaman = max(1, (int)($_GET['halaman'] ?? 1));
+
 function tanggalAktivitasValid($tanggal) {
     $date = DateTime::createFromFormat('Y-m-d', $tanggal);
     return $date && $date->format('Y-m-d') === $tanggal;
@@ -23,6 +27,7 @@ if (
 ) {
     $dari = '';
     $sampai = '';
+    $halaman = 1;
 }
 
 $aktivitas = [];
@@ -63,15 +68,18 @@ if ($sampai !== '') {
 }
 
 $stmt = $conn->prepare($sql);
+
 if ($types !== '') {
     $stmt->bind_param($types, ...$params);
 }
+
 $stmt->execute();
 $result = $stmt->get_result();
 
 while ($row = $result->fetch_assoc()) {
     $aktivitas[] = $row;
 }
+
 $stmt->close();
 
 // Ambil log pelanggan
@@ -100,7 +108,12 @@ $types = "";
 $params = [];
 
 if ($kataKunci !== '') {
-    $sql .= " AND (l.aktivitas LIKE ? OR l.nama_lama LIKE ? OR l.nama_baru LIKE ?)";
+    $sql .= " AND (
+        l.aktivitas LIKE ?
+        OR l.nama_lama LIKE ?
+        OR l.nama_baru LIKE ?
+    )";
+
     $cari = "%$kataKunci%";
     $types .= "sss";
     $params[] = $cari;
@@ -121,21 +134,61 @@ if ($sampai !== '') {
 }
 
 $stmt = $conn->prepare($sql);
+
 if ($types !== '') {
     $stmt->bind_param($types, ...$params);
 }
+
 $stmt->execute();
 $result = $stmt->get_result();
 
 while ($row = $result->fetch_assoc()) {
     $aktivitas[] = $row;
 }
+
 $stmt->close();
 
-// Urutkan semua aktivitas berdasarkan waktu terbaru
+// Urutkan seluruh aktivitas berdasarkan waktu terbaru
 usort($aktivitas, function ($a, $b) {
-    return strtotime($b['waktu']) <=> strtotime($a['waktu']);
+    $waktu = strtotime($b['waktu']) <=> strtotime($a['waktu']);
+
+    if ($waktu !== 0) {
+        return $waktu;
+    }
+
+    return (int)$b['id_log'] <=> (int)$a['id_log'];
 });
+
+// Statistik seluruh hasil filter
+$totalAktivitas = count($aktivitas);
+
+$jumlahSistem = count(array_filter(
+    $aktivitas,
+    fn($item) => $item['sumber'] === 'Sistem / Transaksi'
+));
+
+$jumlahPelanggan = count(array_filter(
+    $aktivitas,
+    fn($item) => $item['sumber'] === 'Pelanggan'
+));
+
+// Menghitung halaman
+$totalHalaman = max(1, (int)ceil($totalAktivitas / $batas));
+$halaman = min($halaman, $totalHalaman);
+$mulai = ($halaman - 1) * $batas;
+
+// Mengambil aktivitas sesuai halaman
+$aktivitasHalaman = array_slice($aktivitas, $mulai, $batas);
+
+// Membuat URL pagination
+function linkHalaman($nomor, $kataKunci, $dari, $sampai) {
+    return "index.php?" . http_build_query([
+        'cari' => $kataKunci,
+        'dari' => $dari,
+        'sampai' => $sampai,
+        'halaman' => $nomor
+    ]);
+}
 
 require_once __DIR__ . "/../header.php";
 ?>
@@ -147,11 +200,12 @@ require_once __DIR__ . "/../header.php";
     </div>
 </div>
 
+<!-- Statistik -->
 <div class="stats-grid">
     <div class="stat-card">
         <div class="stat-info">
             <span>Total Aktivitas</span>
-            <h3><?= number_format(count($aktivitas)) ?></h3>
+            <h3><?= number_format($totalAktivitas) ?></h3>
         </div>
         <div class="stat-icon">🕒</div>
     </div>
@@ -159,15 +213,7 @@ require_once __DIR__ . "/../header.php";
     <div class="stat-card">
         <div class="stat-info">
             <span>Log Transaksi / Sistem</span>
-            <h3>
-                <?php
-                $jumlahSistem = count(array_filter(
-                    $aktivitas,
-                    fn($item) => $item['sumber'] === 'Sistem / Transaksi'
-                ));
-                echo number_format($jumlahSistem);
-                ?>
-            </h3>
+            <h3><?= number_format($jumlahSistem) ?></h3>
         </div>
         <div class="stat-icon">🧾</div>
     </div>
@@ -175,20 +221,13 @@ require_once __DIR__ . "/../header.php";
     <div class="stat-card">
         <div class="stat-info">
             <span>Log Pelanggan</span>
-            <h3>
-                <?php
-                $jumlahPelanggan = count(array_filter(
-                    $aktivitas,
-                    fn($item) => $item['sumber'] === 'Pelanggan'
-                ));
-                echo number_format($jumlahPelanggan);
-                ?>
-            </h3>
+            <h3><?= number_format($jumlahPelanggan) ?></h3>
         </div>
         <div class="stat-icon">👥</div>
     </div>
 </div>
 
+<!-- Filter Aktivitas -->
 <div class="panel" style="margin-top:25px;">
     <div class="card-header">
         <div>
@@ -202,21 +241,30 @@ require_once __DIR__ . "/../header.php";
 
         <div style="flex:1;min-width:180px;">
             <label>Kata Kunci</label>
-            <input type="text" name="cari"
-                   placeholder="Cari aktivitas..."
-                   value="<?= e($kataKunci) ?>">
+            <input
+                type="text"
+                name="cari"
+                placeholder="Cari aktivitas..."
+                value="<?= e($kataKunci) ?>"
+            >
         </div>
 
         <div>
             <label>Dari Tanggal</label>
-            <input type="date" name="dari"
-                   value="<?= e($dari) ?>">
+            <input
+                type="date"
+                name="dari"
+                value="<?= e($dari) ?>"
+            >
         </div>
 
         <div>
             <label>Sampai Tanggal</label>
-            <input type="date" name="sampai"
-                   value="<?= e($sampai) ?>">
+            <input
+                type="date"
+                name="sampai"
+                value="<?= e($sampai) ?>"
+            >
         </div>
 
         <button type="submit" class="btn btn-primary">
@@ -229,6 +277,7 @@ require_once __DIR__ . "/../header.php";
     </form>
 </div>
 
+<!-- Daftar Aktivitas -->
 <div class="panel" style="margin-top:25px;">
     <div class="card-header">
         <div>
@@ -248,25 +297,39 @@ require_once __DIR__ . "/../header.php";
                     <th>Waktu</th>
                 </tr>
             </thead>
+
             <tbody>
-                <?php if (count($aktivitas) > 0): ?>
-                    <?php foreach ($aktivitas as $no => $row): ?>
+                <?php if ($totalAktivitas > 0): ?>
+
+                    <?php foreach ($aktivitasHalaman as $no => $row): ?>
                         <tr>
-                            <td><?= $no + 1 ?></td>
+                            <td><?= $mulai + $no + 1 ?></td>
+
                             <td>
-                                <strong><?= e($row['aktivitas']) ?></strong>
+                                <strong>
+                                    <?= e($row['aktivitas']) ?>
+                                </strong>
                             </td>
-                            <td><?= e($row['keterangan'] ?? '-') ?></td>
+
+                            <td>
+                                <?= e($row['keterangan'] ?? '-') ?>
+                            </td>
+
                             <td>
                                 <span class="badge">
                                     <?= e($row['sumber']) ?>
                                 </span>
                             </td>
+
                             <td>
-                                <?= date('d/m/Y H:i:s', strtotime($row['waktu'])) ?>
+                                <?= date(
+                                    'd/m/Y H:i:s',
+                                    strtotime($row['waktu'])
+                                ) ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
+
                 <?php else: ?>
                     <tr>
                         <td colspan="5" style="text-align:center;">
@@ -277,6 +340,167 @@ require_once __DIR__ . "/../header.php";
             </tbody>
         </table>
     </div>
+
+    <!-- Pagination -->
+    <?php if ($totalAktivitas > 0): ?>
+        <div class="pagination-container">
+
+            <div class="pagination-info">
+                Menampilkan
+                <?= $mulai + 1 ?>
+                -
+                <?= min($mulai + $batas, $totalAktivitas) ?>
+                dari
+                <?= number_format($totalAktivitas) ?>
+                aktivitas
+            </div>
+
+            <div class="pagination">
+
+                <!-- Sebelumnya -->
+                <?php if ($halaman > 1): ?>
+                    <a
+                        href="<?= e(linkHalaman($halaman - 1, $kataKunci, $dari, $sampai)) ?>"
+                        class="page-link"
+                    >
+                        &laquo; Sebelumnya
+                    </a>
+                <?php else: ?>
+                    <span class="page-link disabled">
+                        &laquo; Sebelumnya
+                    </span>
+                <?php endif; ?>
+
+                <?php
+                $awal = max(1, $halaman - 2);
+                $akhir = min($totalHalaman, $halaman + 2);
+                ?>
+
+                <!-- Halaman pertama -->
+                <?php if ($awal > 1): ?>
+                    <a
+                        href="<?= e(linkHalaman(1, $kataKunci, $dari, $sampai)) ?>"
+                        class="page-link"
+                    >
+                        1
+                    </a>
+
+                    <?php if ($awal > 2): ?>
+                        <span class="page-dots">...</span>
+                    <?php endif; ?>
+                <?php endif; ?>
+
+                <!-- Nomor halaman -->
+                <?php for ($i = $awal; $i <= $akhir; $i++): ?>
+                    <a
+                        href="<?= e(linkHalaman($i, $kataKunci, $dari, $sampai)) ?>"
+                        class="page-link <?= $i == $halaman ? 'active' : '' ?>"
+                    >
+                        <?= $i ?>
+                    </a>
+                <?php endfor; ?>
+
+                <!-- Halaman terakhir -->
+                <?php if ($akhir < $totalHalaman): ?>
+                    <?php if ($akhir < $totalHalaman - 1): ?>
+                        <span class="page-dots">...</span>
+                    <?php endif; ?>
+
+                    <a
+                        href="<?= e(linkHalaman($totalHalaman, $kataKunci, $dari, $sampai)) ?>"
+                        class="page-link"
+                    >
+                        <?= $totalHalaman ?>
+                    </a>
+                <?php endif; ?>
+
+                <!-- Selanjutnya -->
+                <?php if ($halaman < $totalHalaman): ?>
+                    <a
+                        href="<?= e(linkHalaman($halaman + 1, $kataKunci, $dari, $sampai)) ?>"
+                        class="page-link"
+                    >
+                        Selanjutnya &raquo;
+                    </a>
+                <?php else: ?>
+                    <span class="page-link disabled">
+                        Selanjutnya &raquo;
+                    </span>
+                <?php endif; ?>
+
+            </div>
+        </div>
+    <?php endif; ?>
+
 </div>
+
+<style>
+.pagination-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+    margin-top: 20px;
+    padding: 15px 0;
+}
+
+.pagination-info {
+    font-size: 13px;
+    color: #64748b;
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.page-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    padding: 8px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    text-decoration: none;
+    color: #334155;
+    background: #fff;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.page-link:hover {
+    background: #eff6ff;
+    border-color: #2563eb;
+    color: #2563eb;
+}
+
+.page-link.active {
+    background: #2563eb;
+    border-color: #2563eb;
+    color: #fff;
+}
+
+.page-link.disabled {
+    color: #94a3b8;
+    background: #f8fafc;
+    cursor: not-allowed;
+}
+
+.page-dots {
+    padding: 0 4px;
+    color: #64748b;
+}
+
+@media (max-width: 600px) {
+    .pagination-container {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+</style>
 
 <?php require_once __DIR__ . "/../../includes/footer.php"; ?>

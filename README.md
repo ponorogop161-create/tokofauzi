@@ -8,13 +8,13 @@
 
 | Informasi | Keterangan |
 |---|---|
-| 🏷️ Nama Aplikasi | TokoKu |
-| 🌐 Jenis Aplikasi | Sistem Informasi Penjualan Toko |
-| 💻 Platform | Website |
-| ⚙️ Bahasa Pemrograman | PHP Native |
-| 🗄️ Database | MySQL / MariaDB |
-| 🚀 Web Server | Apache (XAMPP) |
-| 📅 Tahun | 2026 |
+| Nama Aplikasi | TokoKu |
+| Jenis Aplikasi | Sistem Informasi Penjualan Toko |
+| Platform | Website |
+| Bahasa Pemrograman | PHP Native |
+| Database | MySQL / MariaDB |
+| Web Server | Apache (XAMPP) |
+| Tahun | 2026 |
 
 ## 🛠️ 2. Teknologi yang Digunakan
 
@@ -35,9 +35,11 @@
 - 👥 Mengelola data pelanggan.
 - 🏢 Mengelola data cabang toko.
 - 🔐 Mengelola akun pengguna.
+- 💳 Mengelola kartu RFID pengguna.
 - 🧾 Melihat dan mengelola transaksi.
+- 🔎 Memverifikasi pembayaran QRIS.
 - 📈 Melihat laporan penjualan.
-- 🖨️ Mencetak dan mengekspor laporan.
+- 🖨️ Mencetak laporan penjualan.
 - 📋 Melihat aktivitas sistem.
 
 ### 🧑‍💻 Kasir
@@ -46,8 +48,11 @@
 - 👥 Memilih pelanggan.
 - 📦 Memilih produk dan jumlah pembelian.
 - 💰 Menghitung total belanja.
+- 💵 Menghitung uang diterima dan kembalian.
 - 🧾 Mencetak struk transaksi seperti minimarket.
 - 📚 Melihat riwayat transaksi.
+- 📈 Melihat laporan penjualan pribadi.
+- 🔍 Memfilter transaksi berdasarkan tanggal dan pencarian.
 
 ### 🛒 Pembeli (User)
 - 🏠 Dashboard pembeli.
@@ -57,6 +62,7 @@
 - ✏️ Mengubah jumlah produk.
 - 🗑️ Menghapus produk dari keranjang.
 - 📦 Melakukan checkout.
+- 💳 Memilih metode pembayaran.
 - 📋 Melihat daftar pesanan.
 - 🔍 Melihat detail pesanan.
 - 🖨️ Mencetak struk pesanan.
@@ -67,16 +73,18 @@ TokoKu menyediakan tiga pilihan metode pembayaran:
 
 | Ikon | Metode | Keterangan |
 |---|---|---|
-| 📱 | QRIS | Pembayaran menggunakan kode QR dan unggah bukti pembayaran. |
+| 📱 | QRIS | Pembayaran menggunakan kode QR dan unggah bukti pembayaran untuk diverifikasi admin. |
 | 🚚 | COD | Pembayaran dilakukan ketika barang diterima. |
 | 🏪 | KASIR | Pembayaran langsung di kasir cabang toko. |
 
 ### 📌 Status Pembayaran
+
 - ⏳ Belum Bayar
 - 🔎 Menunggu Verifikasi
 - ✅ Lunas
 
 ### 📦 Status Pesanan
+
 - 🕒 Menunggu
 - ⚙️ Diproses
 - 🚚 Dikirim
@@ -88,31 +96,33 @@ TokoKu menyediakan tiga pilihan metode pembayaran:
 ```text
 tokoku/
 │
-├── 📂 admin/
+├── admin/
 │   ├── produk/
 │   ├── kategori/
 │   ├── pelanggan/
 │   ├── cabang/
-│   ├── akun/
+│   ├── pengguna/
 │   ├── transaksi/
 │   ├── laporan/
 │   └── aktivitas/
 │
-├── 📂 kasir/
+├── kasir/
 │   ├── transaksi/
+│   ├── laporan/
 │   └── includes/
 │
-├── 📂 user/
+├── user/
 │   ├── produk/
 │   ├── keranjang/
+│   ├── checkout/
 │   ├── pesanan/
 │   └── includes/
 │
-├── 📂 config/
+├── config/
 │   ├── koneksi.php
 │   └── auth.php
 │
-├── 📂 assets/
+├── assets/
 │   ├── css/
 │   ├── js/
 │   ├── images/
@@ -120,11 +130,13 @@ tokoku/
 │       ├── produk/
 │       └── pembayaran/
 │
-├── 📂 includes/
-├── 🔑 login.php
-├── 🚪 logout.php
-├── 🏠 index.php
-└── 📄 README.md
+├── includes/
+│
+├── login.php
+├── login_rfid.php
+├── logout.php
+├── index.php
+└── README.md
 ```
 
 ## ⚙️ 6. Persyaratan Sistem
@@ -159,9 +171,7 @@ D:\xampp\htdocs\tokoku
 1. Buka browser.
 2. Masuk ke phpMyAdmin:
 
-```text
-http://localhost/phpmyadmin
-```
+   http://localhost/phpmyadmin
 
 3. Gunakan database `db_tokoku` yang sudah dibuat sebelumnya.
 4. Jika database belum tersedia, buat database tersebut dan impor file SQL proyek.
@@ -177,10 +187,11 @@ Buka file:
 config/koneksi.php
 ```
 
-Sesuaikan konfigurasi berikut:
+Sesuaikan konfigurasi database:
 
 ```php
 <?php
+
 $host = "localhost";
 $username = "root";
 $password = "";
@@ -198,14 +209,13 @@ if (!$conn) {
 }
 
 mysqli_set_charset($conn, "utf8mb4");
-?>
 ```
 
 ### 5️⃣ Membuka Website
 
 Akses alamat berikut melalui browser:
 
-🌐 **http://localhost/tokoku/**
+**http://localhost/tokoku/**
 
 Website akan menampilkan halaman login TokoKu.
 
@@ -213,11 +223,11 @@ Website akan menampilkan halaman login TokoKu.
 
 TokoKu memiliki tiga jenis hak akses:
 
-| 👤 Role | 🔑 Hak Akses |
+| Role | Hak Akses |
 |---|---|
-| 👨‍💼 Admin | Mengelola seluruh data dan laporan. |
-| 🧑‍💻 Kasir | Mengelola transaksi penjualan. |
-| 🛒 User | Melihat produk dan melakukan pemesanan. |
+| 👨‍💼 Admin | Mengelola data, pengguna, transaksi, pembayaran, dan laporan. |
+| 🧑‍💻 Kasir | Melakukan transaksi penjualan, melihat riwayat, dan laporan penjualan. |
+| 🛒 User | Melihat produk, mengelola keranjang, checkout, dan melihat pesanan. |
 
 Setiap pengguna diarahkan ke dashboard sesuai dengan role akun setelah berhasil login.
 
@@ -252,7 +262,7 @@ Database juga menggunakan objek pendukung:
 |---|---|
 | 📸 Foto produk | `assets/uploads/produk/` |
 | 🧾 Bukti pembayaran | `assets/uploads/pembayaran/` |
-| 📱 Gambar QRIS | `assets/images/qris-tokoku.png` |
+| 📱 Gambar QRIS | `assets/images/` |
 
 Pastikan folder penyimpanan tersedia dan dapat ditulisi oleh PHP.
 
@@ -265,15 +275,21 @@ Setelah instalasi selesai, lakukan pengujian berikut:
 - [ ] 📊 Periksa dashboard admin.
 - [ ] 📦 Tambah, ubah, dan hapus produk.
 - [ ] 👥 Periksa data pelanggan dan kategori.
+- [ ] 🏢 Periksa pengelolaan cabang.
+- [ ] 🔐 Periksa pengelolaan akun pengguna.
 - [ ] 🧑‍💻 Login menggunakan akun Kasir.
 - [ ] 🛍️ Lakukan transaksi penjualan.
 - [ ] 🧾 Periksa dan cetak struk transaksi.
+- [ ] 📚 Periksa riwayat transaksi kasir.
+- [ ] 📈 Periksa laporan penjualan kasir.
 - [ ] 🛒 Login menggunakan akun User.
 - [ ] 🔎 Periksa katalog produk.
 - [ ] 🛍️ Coba fitur keranjang.
 - [ ] 💳 Lakukan checkout dengan metode pembayaran.
+- [ ] 📱 Uji pembayaran QRIS dan verifikasi admin.
 - [ ] 📋 Periksa detail dan riwayat pesanan.
-- [ ] 📈 Periksa laporan penjualan.
+- [ ] 🚚 Uji perubahan status pesanan.
+- [ ] 📈 Periksa laporan penjualan admin.
 
 ## 📞 12. Penutup
 

@@ -1,0 +1,24 @@
+# Konfigurasi database
+/config/koneksi.php
+.env
+.env.*
+
+# Upload pengguna
+/uploads/
+/assets/uploads/
+
+# QRIS toko
+/assets/images/qris-tokoku.png
+/uploads/qris/
+
+# Database dan backup
+*.sql
+
+# Log dan cache
+*.log
+/cache/
+/tmp/
+
+# Editor
+.vscode/
+.idea/
