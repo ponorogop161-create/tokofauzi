@@ -13,7 +13,7 @@ if (empty($keranjang)) {
 }
 
 $daftarProduk = [];
-$total = 0;
+$subtotalBelanja = 0;
 
 foreach ($keranjang as $id => $jumlah) {
     $id = (int)$id;
@@ -23,7 +23,8 @@ foreach ($keranjang as $id => $jumlah) {
 
     $stmt = $conn->prepare(
         "SELECT id_produk, nama_produk, harga, stok
-         FROM tbl_produk WHERE id_produk = ? AND stok > 0"
+         FROM tbl_produk
+         WHERE id_produk = ? AND stok > 0"
     );
     $stmt->bind_param("i", $id);
     $stmt->execute();
@@ -31,13 +32,14 @@ foreach ($keranjang as $id => $jumlah) {
     $stmt->close();
 
     if (!$produk || $jumlah > (int)$produk['stok']) {
-        die("Stok produk " . e($produk['nama_produk'] ?? 'tidak tersedia') .
+        die("Stok produk " .
+            e($produk['nama_produk'] ?? 'tidak tersedia') .
             " tidak mencukupi. Silakan periksa keranjang.");
     }
 
     $produk['jumlah'] = $jumlah;
     $produk['subtotal'] = (float)$produk['harga'] * $jumlah;
-    $total += $produk['subtotal'];
+    $subtotalBelanja += $produk['subtotal'];
     $daftarProduk[] = $produk;
 }
 
@@ -45,8 +47,13 @@ if (!$daftarProduk) {
     die("Tidak ada produk valid di keranjang.");
 }
 
+$ppn = round($subtotalBelanja * 0.11, 2);
+$total = $subtotalBelanja + $ppn;
+
 $cabang = $conn->query(
-    "SELECT id_cabang, nama_cabang, kota FROM tbl_cabang ORDER BY nama_cabang"
+    "SELECT id_cabang, nama_cabang, kota
+     FROM tbl_cabang
+     ORDER BY nama_cabang"
 );
 
 $qrPath = __DIR__ . "/../../assets/images/qris-tokoku.png";
@@ -100,8 +107,10 @@ require __DIR__ . "/../header.php";
         <div class="checkout-box">
             <h3>Informasi Pembeli</h3>
 
-            <form class="checkout-form" action="proses_checkout.php"
-                  method="POST" enctype="multipart/form-data">
+            <form class="checkout-form"
+                  action="proses_checkout.php"
+                  method="POST"
+                  enctype="multipart/form-data">
 
                 <label>Nama Penerima / Pemesan</label>
                 <input type="text" name="nama_penerima"
@@ -111,6 +120,16 @@ require __DIR__ . "/../header.php";
                 <input type="tel" name="no_hp" required
                        pattern="[0-9+ -]{9,20}"
                        placeholder="Contoh: 081234567890">
+
+                <div id="emailBox" hidden>
+                    <label for="email_pelanggan">Email untuk Pembayaran Duitku</label>
+                    <input type="email"
+                           name="email_pelanggan"
+                           id="email_pelanggan"
+                           maxlength="150"
+                           placeholder="nama@email.com">
+                    <small>Email digunakan untuk data invoice pembayaran Duitku.</small>
+                </div>
 
                 <div id="alamatBox">
                     <label>Kota / Kabupaten</label>
@@ -129,7 +148,7 @@ require __DIR__ . "/../header.php";
                            value="QRIS" required>
                     <span>
                         <strong>QRIS</strong>
-                        <small>Bayar dengan scan QR Code.</small>
+                        <small>Bayar dengan scan QR Code dan upload bukti pembayaran.</small>
                     </span>
                 </label>
 
@@ -149,6 +168,60 @@ require __DIR__ . "/../header.php";
                     </span>
                 </label>
 
+                <label class="payment-option">
+                    <input type="radio" name="metode_pembayaran" value="DUITKU">
+                    <span>
+                        <strong>Duitku Payment Gateway</strong>
+                        <small>Bayar online melalui metode pembayaran yang tersedia di Duitku.</small>
+                    </span>
+                </label>
+
+                <div id="duitkuDetail" class="payment-detail" hidden>
+                    <strong>Pembayaran Online Duitku</strong>
+                    <p>
+                        Pilih metode pembayaran, lalu kamu akan diarahkan ke
+                        halaman resmi Duitku untuk menyelesaikan pembayaran.
+                    </p>
+
+                    <label for="duitku_payment_code">
+                        Metode pembayaran Duitku
+                    </label>
+                    <select
+                        name="duitku_payment_code"
+                        id="duitku_payment_code"
+                    >
+                        <option value="">-- Pilih metode pembayaran --</option>
+
+                        <optgroup label="Virtual Account">
+                            <option value="BR">BRIVA (BRI Virtual Account)</option>
+                            <option value="BC">BCA Virtual Account</option>
+                            <option value="M2">Mandiri Virtual Account</option>
+                            <option value="I1">BNI Virtual Account</option>
+                            <option value="B1">CIMB Niaga Virtual Account</option>
+                            <option value="BT">Permata Virtual Account</option>
+                            <option value="VA">Maybank Virtual Account</option>
+                            <option value="BV">BSI Virtual Account</option>
+                        </optgroup>
+
+                        <optgroup label="QRIS dan E-Wallet">
+                            <option value="NQ">QRIS</option>
+                            <option value="DA">DANA</option>
+                            <option value="OV">OVO</option>
+                            <option value="SA">ShopeePay</option>
+                            <option value="LF">LinkAja</option>
+                        </optgroup>
+
+                        <optgroup label="Ritel dan Lainnya">
+                            <option value="IR">Indomaret</option>
+                            <option value="FT">Alfamart / Pegadaian / Pos</option>
+                            <option value="VC">Kartu Kredit</option>
+                            <option value="DN">Indodana PayLater</option>
+                            <option value="AT">Atome</option>
+                        </optgroup>
+                    </select>
+                    <small>Pastikan email yang dimasukkan masih aktif.</small>
+                </div>
+
                 <div id="qrisDetail" class="payment-detail" hidden>
                     <strong>Scan QRIS TokoKu</strong>
 
@@ -157,12 +230,13 @@ require __DIR__ . "/../header.php";
                              src="<?= BASE_URL ?>uploads/qris/qris-tokoku.jpeg"
                              alt="QRIS TokoKu">
                     <?php else: ?>
-                        <p>Gambar QRIS belum tersedia. Admin dapat menambahkannya nanti.</p>
+                        <p>Gambar QRIS belum tersedia.</p>
                     <?php endif; ?>
 
                     <label>Upload Bukti Pembayaran</label>
                     <input type="file" name="bukti_pembayaran"
-                           id="bukti" accept="image/jpeg,image/png,image/webp">
+                           id="bukti"
+                           accept="image/jpeg,image/png,image/webp">
                     <small>Format JPG, PNG, atau WEBP. Maksimal 2 MB.</small>
                 </div>
 
@@ -195,15 +269,25 @@ require __DIR__ . "/../header.php";
                     <div>
                         <strong><?= e($item['nama_produk']) ?></strong>
                         <div style="font-size:13px;color:#64748b">
-                            <?= $item['jumlah'] ?> × <?= rupiah($item['harga']) ?>
+                            <?= (int)$item['jumlah'] ?> × <?= rupiah($item['harga']) ?>
                         </div>
                     </div>
                     <strong><?= rupiah($item['subtotal']) ?></strong>
                 </div>
             <?php endforeach; ?>
 
+            <div class="checkout-item">
+                <span>Subtotal</span>
+                <strong><?= rupiah($subtotalBelanja) ?></strong>
+            </div>
+
+            <div class="checkout-item">
+                <span>PPN (11%)</span>
+                <strong><?= rupiah($ppn) ?></strong>
+            </div>
+
             <div class="checkout-total">
-                <span>Total</span>
+                <span>Total Bayar</span>
                 <span><?= rupiah($total) ?></span>
             </div>
         </div>
@@ -212,8 +296,14 @@ require __DIR__ . "/../header.php";
 
 <script>
 const metode = document.querySelectorAll('input[name="metode_pembayaran"]');
+
 const qrisDetail = document.getElementById('qrisDetail');
 const kasirDetail = document.getElementById('kasirDetail');
+const duitkuDetail = document.getElementById('duitkuDetail');
+const emailBox = document.getElementById('emailBox');
+const email = document.getElementById('email_pelanggan');
+const duitkuPaymentCode = document.getElementById('duitku_payment_code');
+
 const alamatBox = document.getElementById('alamatBox');
 const bukti = document.getElementById('bukti');
 const idCabang = document.getElementById('id_cabang');
@@ -221,19 +311,30 @@ const alamat = document.getElementById('alamat');
 const kota = document.getElementById('kota');
 
 function aturPembayaran() {
-    const pilihan = document.querySelector('input[name="metode_pembayaran"]:checked')?.value;
+    const pilihan = document.querySelector(
+        'input[name="metode_pembayaran"]:checked'
+    )?.value;
 
     qrisDetail.hidden = pilihan !== 'QRIS';
     kasirDetail.hidden = pilihan !== 'KASIR';
+    duitkuDetail.hidden = pilihan !== 'DUITKU';
+    emailBox.hidden = pilihan !== 'DUITKU';
+
     alamatBox.hidden = pilihan === 'KASIR';
 
     bukti.required = pilihan === 'QRIS';
     idCabang.required = pilihan === 'KASIR';
+    email.required = pilihan === 'DUITKU';
+    duitkuPaymentCode.required = pilihan === 'DUITKU';
+
     alamat.required = pilihan !== 'KASIR';
     kota.required = pilihan !== 'KASIR';
 }
 
-metode.forEach(input => input.addEventListener('change', aturPembayaran));
+metode.forEach(input => {
+    input.addEventListener('change', aturPembayaran);
+});
+
 aturPembayaran();
 </script>
 

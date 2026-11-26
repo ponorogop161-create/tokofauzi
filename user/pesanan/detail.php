@@ -13,6 +13,75 @@ if ($idTransaksi <= 0) {
     exit;
 }
 
+function cekStatusDuitku(
+    array $config,
+    string $merchantOrderId
+): array {
+    $merchantCode = trim($config['merchant_code'] ?? '');
+    $apiKey = trim($config['api_key'] ?? '');
+
+    if ($merchantCode === '' || $apiKey === '' || $merchantOrderId === '') {
+        throw new RuntimeException('Data verifikasi Duitku belum lengkap.');
+    }
+
+    if (!function_exists('curl_init')) {
+        throw new RuntimeException('Ekstensi cURL PHP belum aktif.');
+    }
+
+    $payload = json_encode([
+        'merchantCode' => $merchantCode,
+        'merchantOrderId' => $merchantOrderId,
+        'signature' => hash_hmac(
+            'sha256',
+            $merchantCode . $merchantOrderId,
+            $apiKey
+        )
+    ], JSON_UNESCAPED_SLASHES);
+
+    if ($payload === false) {
+        throw new RuntimeException('Permintaan status Duitku tidak dapat dibuat.');
+    }
+
+    $statusUrl = !empty($config['sandbox'])
+        ? 'https://sandbox.duitku.com/webapi/api/merchant/transactionStatus'
+        : 'https://passport.duitku.com/webapi/api/merchant/transactionStatus';
+
+    $ch = curl_init($statusUrl);
+
+    if ($ch === false) {
+        throw new RuntimeException('Koneksi ke Duitku tidak dapat dibuat.');
+    }
+
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 20,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json'
+        ]
+    ]);
+
+    $response = curl_exec($ch);
+    $curlError = curl_error($ch);
+    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($response === false || $curlError !== '' || $httpCode !== 200) {
+        throw new RuntimeException('API pengecekan status Duitku tidak dapat dihubungi.');
+    }
+
+    $hasil = json_decode($response, true);
+
+    if (!is_array($hasil)) {
+        throw new RuntimeException('Respons status dari Duitku tidak valid.');
+    }
+
+    return $hasil;
+}
+
 $pesan = "";
 $jenisPesan = "success";
 
@@ -188,6 +257,7 @@ $stmt = $conn->prepare("
         t.id_transaksi,
         t.tanggal,
         t.total_belanja,
+        t.ppn,
         t.no_hp,
         t.alamat_pengiriman,
         t.metode_pembayaran,
@@ -195,6 +265,11 @@ $stmt = $conn->prepare("
         t.status_pesanan,
         t.id_cabang,
         t.bukti_pembayaran,
+        t.email_pelanggan,
+        t.merchant_order_id,
+        t.duitku_reference,
+        t.duitku_payment_url,
+        t.duitku_expiry,
         p.nama_pelanggan,
         c.nama_cabang,
         c.kota AS kota_cabang
@@ -218,6 +293,96 @@ $stmt->close();
 if (!$transaksi) {
     header("Location: index.php?pesan=tidak_ditemukan");
     exit;
+}
+
+// Duitku mengarahkan pelanggan kembali ke halaman ini setelah pembayaran.
+// Status hanya diubah setelah diverifikasi langsung ke API Duitku.
+$duitkuReturnSuccess = false;
+$duitkuReturnPending = false;
+$duitkuReturnCheckFailed = false;
+$duitkuReturnMessage = '';
+$isDuitkuReturn = (
+    isset($_GET['duitku_return']) &&
+    $_GET['duitku_return'] === '1' &&
+    strtoupper($transaksi['metode_pembayaran']) === 'DUITKU'
+);
+$duitkuCheckAttempt = max(0, min(2, (int)($_GET['duitku_check'] ?? 0)));
+
+if ($isDuitkuReturn && $transaksi['status_pembayaran'] === 'lunas') {
+    $duitkuReturnSuccess = true;
+}
+
+if ($isDuitkuReturn && $transaksi['status_pembayaran'] !== 'lunas') {
+    try {
+        $configDuitku = require __DIR__ . '/../../config/duitku.php';
+        $merchantOrderId = trim($transaksi['merchant_order_id'] ?? '');
+        $hasilStatus = cekStatusDuitku($configDuitku, $merchantOrderId);
+
+        $statusCode = trim((string)($hasilStatus['statusCode'] ?? ''));
+        $referenceStatus = trim((string)($hasilStatus['reference'] ?? ''));
+        $nominalSesuai = is_numeric($hasilStatus['amount'] ?? null)
+            && abs(
+                (float)$hasilStatus['amount'] -
+                (float)$transaksi['total_belanja']
+            ) < 0.001;
+        $referenceSesuai = !empty($transaksi['duitku_reference'])
+            && $referenceStatus !== ''
+            && hash_equals(
+                (string)$transaksi['duitku_reference'],
+                $referenceStatus
+            );
+
+        if (
+            $statusCode === '00' &&
+            ($hasilStatus['merchantOrderId'] ?? '') === $merchantOrderId &&
+            $nominalSesuai &&
+            $referenceSesuai
+        ) {
+            $stmtStatus = $conn->prepare(
+                "UPDATE tbl_transaksi
+                 SET status_pembayaran = 'lunas'
+                 WHERE id_transaksi = ?
+                   AND id_user = ?
+                   AND metode_pembayaran = 'DUITKU'
+                   AND merchant_order_id = ?
+                   AND duitku_reference = ?
+                   AND total_belanja = ?
+                   AND status_pembayaran <> 'lunas'"
+            );
+            $totalBelanja = (float)$transaksi['total_belanja'];
+            $stmtStatus->bind_param(
+                'iissd',
+                $idTransaksi,
+                $idUser,
+                $merchantOrderId,
+                $referenceStatus,
+                $totalBelanja
+            );
+            $stmtStatus->execute();
+            $stmtStatus->close();
+
+            $transaksi['status_pembayaran'] = 'lunas';
+            $duitkuReturnSuccess = true;
+        } elseif ($statusCode === '01' && $duitkuCheckAttempt < 2) {
+            // Status Duitku masih diproses. Pemeriksaan ulang dibatasi 2 kali.
+            $duitkuReturnPending = true;
+        } elseif ($statusCode === '01') {
+            $duitkuReturnCheckFailed = true;
+            $duitkuReturnMessage =
+                'Pembayaran masih diproses. Silakan cek status kembali sesaat lagi.';
+        } elseif ($statusCode === '02') {
+            $duitkuReturnCheckFailed = true;
+            $duitkuReturnMessage =
+                'Pembayaran tidak berhasil atau sudah melewati masa berlaku.';
+        } else {
+            throw new RuntimeException('Data pembayaran dari Duitku tidak sesuai.');
+        }
+    } catch (Throwable $e) {
+        error_log('[TokoKu Duitku return] ' . $e->getMessage());
+        $duitkuReturnCheckFailed = true;
+        $duitkuReturnMessage =
+            'Status pembayaran belum dapat diverifikasi. Silakan coba lagi.';
+    }
 }
 
 // =====================================
@@ -259,6 +424,7 @@ $judul = "Detail Pesanan";
 
 $metode = [
     'QRIS' => 'QRIS',
+    'DUITKU' => 'Duitku (Pembayaran Online)',
     'COD' => 'COD (Bayar saat barang diterima)',
     'KASIR' => 'Bayar langsung ke kasir toko'
 ];
@@ -275,7 +441,40 @@ $judulStatus = [
 ];
 
 $statusPembayaran = $transaksi['status_pembayaran'];
+$ppn = (float)($transaksi['ppn'] ?? 0);
+$totalBayar = (float)$transaksi['total_belanja'];
+
 $isQris = strtoupper($transaksi['metode_pembayaran']) === 'QRIS';
+$isDuitku = strtoupper($transaksi['metode_pembayaran']) === 'DUITKU';
+
+$duitkuPaymentUrl = trim($transaksi['duitku_payment_url'] ?? '');
+$duitkuExpiry = $transaksi['duitku_expiry'] ?? null;
+
+$duitkuExpired = (
+    !empty($duitkuExpiry) &&
+    strtotime($duitkuExpiry) !== false &&
+    strtotime($duitkuExpiry) < time()
+);
+
+// Validasi tautan HTTPS Duitku
+$duitkuUrlValid = false;
+
+if ($isDuitku && $duitkuPaymentUrl !== '') {
+
+    $parsedDuitkuUrl = filter_var(
+        $duitkuPaymentUrl,
+        FILTER_VALIDATE_URL
+    );
+
+    $schemeDuitkuUrl = $parsedDuitkuUrl
+        ? strtolower((string)parse_url($parsedDuitkuUrl, PHP_URL_SCHEME))
+        : '';
+
+    $duitkuUrlValid = (
+        $parsedDuitkuUrl &&
+        $schemeDuitkuUrl === 'https'
+    );
+}
 
 $bisaUploadUlang =
     $isQris && $statusPembayaran === 'belum_bayar';
@@ -500,6 +699,15 @@ require_once __DIR__ . "/../header.php";
     background: #1d4ed8;
 }
 
+.order-duitku {
+    background: #0f766e;
+    color: white;
+}
+
+.order-duitku:hover {
+    background: #115e59;
+}
+
 @media (max-width: 600px) {
     .order-info-grid {
         grid-template-columns: 1fr;
@@ -590,17 +798,6 @@ require_once __DIR__ . "/../header.php";
         </div>
 
         <div class="order-info-item">
-            <span>Status Pesanan</span>
-            <strong>
-                <span class="order-badge">
-                    <?= e(
-                        $judulStatus[$transaksi['status_pesanan']] ?? '-'
-                    ) ?>
-                </span>
-            </strong>
-        </div>
-
-        <div class="order-info-item">
             <span>Alamat / Cabang</span>
             <strong>
                 <?php if ($transaksi['metode_pembayaran'] === 'KASIR'): ?>
@@ -614,6 +811,115 @@ require_once __DIR__ . "/../header.php";
 
     </div>
 </div>
+
+<!-- PEMBAYARAN DUITKU -->
+
+<?php if ($isDuitku): ?>
+
+<div class="order-detail-panel">
+
+    <h3>💳 Pembayaran Duitku</h3>
+
+    <?php if ($statusPembayaran === 'lunas'): ?>
+
+        <div class="order-alert order-alert-success">
+            Pembayaran telah berhasil dikonfirmasi oleh Duitku.
+            Terima kasih telah melakukan pembayaran.
+        </div>
+
+        <?php if (!empty($transaksi['duitku_reference'])): ?>
+            <p>
+                <strong>Nomor Referensi:</strong>
+                <?= e($transaksi['duitku_reference']) ?>
+            </p>
+        <?php endif; ?>
+
+    <?php elseif ($statusPembayaran === 'belum_bayar'): ?>
+
+        <div class="order-alert order-alert-warning">
+            Pesanan ini belum dibayar. Silakan lanjutkan pembayaran melalui
+            halaman resmi Duitku menggunakan tombol di bawah.
+        </div>
+
+        <?php if ($duitkuExpired): ?>
+
+            <div class="order-alert order-alert-danger">
+                Tautan pembayaran telah melewati masa berlaku.
+                Silakan hubungi Admin untuk bantuan membuat pembayaran baru.
+            </div>
+
+        <?php elseif ($duitkuUrlValid): ?>
+
+            <a
+                href="<?= e($duitkuPaymentUrl) ?>"
+                class="order-button order-duitku"
+            >
+                💳 Bayar Sekarang
+            </a>
+
+            <?php if (!empty($duitkuExpiry)): ?>
+                <p style="margin-top:14px; color:#64748b; font-size:13px;">
+                    Batas pembayaran:
+                    <strong>
+                        <?= e(date('d-m-Y H:i', strtotime($duitkuExpiry))) ?>
+                    </strong>
+                </p>
+            <?php endif; ?>
+
+        <?php else: ?>
+
+            <div class="order-alert order-alert-danger">
+                Tautan pembayaran belum tersedia atau tidak valid.
+                Silakan hubungi Admin.
+            </div>
+
+        <?php endif; ?>
+
+        <div class="order-alert order-alert-info" style="margin-top:15px;">
+            Setelah menyelesaikan pembayaran, kamu akan kembali ke halaman ini.
+            Status akan diperiksa langsung ke Duitku.
+        </div>
+
+        <a
+            href="detail.php?id=<?= (int)$idTransaksi ?>&duitku_return=1"
+            class="order-button order-duitku"
+            style="margin-top:15px;"
+        >
+            Cek Status Pembayaran
+        </a>
+
+        <?php if ($duitkuReturnPending): ?>
+            <div class="order-alert order-alert-info" style="margin-top:15px;">
+                Pembayaran sedang disinkronkan. Pemeriksaan akan diulang otomatis.
+            </div>
+        <?php endif; ?>
+
+        <?php if ($duitkuReturnCheckFailed): ?>
+            <div class="order-alert order-alert-warning" style="margin-top:15px;">
+                <?= e($duitkuReturnMessage) ?>
+            </div>
+        <?php endif; ?>
+
+    <?php else: ?>
+
+        <div class="order-alert order-alert-info">
+            Status pembayaran:
+            <?= e($judulStatus[$statusPembayaran] ?? $statusPembayaran) ?>.
+            Status diperbarui setelah diverifikasi langsung ke Duitku.
+        </div>
+
+    <?php endif; ?>
+
+    <?php if (!empty($transaksi['merchant_order_id'])): ?>
+        <p style="font-size:13px; color:#64748b;">
+            <strong>Nomor Pesanan Duitku:</strong>
+            <?= e($transaksi['merchant_order_id']) ?>
+        </p>
+    <?php endif; ?>
+
+</div>
+
+<?php endif; ?>
 
 <!-- VERIFIKASI DAN UPLOAD BUKTI QRIS -->
 
@@ -751,9 +1057,19 @@ require_once __DIR__ . "/../header.php";
         </table>
     </div>
 
-    <div class="order-total">
-        <span>Total Belanja</span>
+    <div class="order-total" style="font-size:14px; padding-bottom:10px;">
+        <span>Subtotal</span>
         <strong><?= rupiah($totalBelanja) ?></strong>
+    </div>
+
+    <div class="order-total" style="font-size:14px; padding-top:0;">
+        <span>PPN (11%)</span>
+        <strong><?= rupiah($ppn) ?></strong>
+    </div>
+
+    <div class="order-total">
+        <span>Total Bayar</span>
+        <strong><?= rupiah($totalBayar) ?></strong>
     </div>
 </div>
 
@@ -774,6 +1090,29 @@ require_once __DIR__ . "/../header.php";
     </a>
 
 </div>
+
+<?php if ($duitkuReturnPending): ?>
+<script>
+window.setTimeout(function () {
+    window.location.replace(
+        'detail.php?id=<?= (int)$idTransaksi ?>&duitku_return=1&duitku_check=<?= $duitkuCheckAttempt + 1 ?>'
+    );
+}, 3000);
+</script>
+<?php endif; ?>
+
+<?php if ($duitkuReturnSuccess): ?>
+<script>
+window.addEventListener('DOMContentLoaded', function () {
+    window.history.replaceState(
+        null,
+        document.title,
+        'detail.php?id=<?= (int)$idTransaksi ?>'
+    );
+    window.alert('Pembayaran berhasil! Pesanan kamu sudah dikonfirmasi.');
+});
+</script>
+<?php endif; ?>
 
 <?php
 $stmtDetail->close();

@@ -17,14 +17,28 @@ $nama = trim($_POST['nama_penerima'] ?? '');
 $noHp = trim($_POST['no_hp'] ?? '');
 $kota = trim($_POST['kota'] ?? '');
 $alamat = trim($_POST['alamat_pengiriman'] ?? '');
-$metode = $_POST['metode_pembayaran'] ?? '';
+$metode = strtoupper(trim($_POST['metode_pembayaran'] ?? ''));
+
+$emailPelanggan = trim(
+    $_POST['email_pelanggan'] ?? $_POST['email'] ?? ''
+);
+$duitkuPaymentCode = strtoupper(
+    trim($_POST['duitku_payment_code'] ?? '')
+);
+
+$metodeDuitkuDiizinkan = [
+    'BR', 'BC', 'M2', 'I1', 'B1', 'BT', 'VA', 'BV',
+    'NQ', 'DA', 'OV', 'SA', 'LF', 'IR', 'FT', 'VC',
+    'DN', 'AT'
+];
 
 $idCabang = null;
 $bukti = null;
 $fileTersimpan = null;
 $transaksiDimulai = false;
 
-function kembaliCheckout(string $pesan): never {
+function kembaliCheckout(string $pesan): never
+{
     header("Location: checkout.php?error=" . urlencode($pesan));
     exit;
 }
@@ -41,8 +55,26 @@ if (!preg_match('/^[0-9+ -]{9,20}$/', $noHp)) {
     kembaliCheckout("Nomor HP tidak valid.");
 }
 
-if (!in_array($metode, ['QRIS', 'COD', 'KASIR'], true)) {
+if (!in_array($metode, ['QRIS', 'COD', 'KASIR', 'DUITKU'], true)) {
     kembaliCheckout("Metode pembayaran tidak valid.");
+}
+
+// Validasi email khusus Duitku.
+if ($metode === 'DUITKU') {
+    if (
+        !$emailPelanggan ||
+        !filter_var($emailPelanggan, FILTER_VALIDATE_EMAIL)
+    ) {
+        kembaliCheckout("Alamat email Duitku tidak valid.");
+    }
+
+    if (strlen($emailPelanggan) > 150) {
+        kembaliCheckout("Alamat email maksimal 150 karakter.");
+    }
+
+    if (!in_array($duitkuPaymentCode, $metodeDuitkuDiizinkan, true)) {
+        kembaliCheckout("Silakan pilih metode pembayaran Duitku.");
+    }
 }
 
 // =====================================
@@ -66,7 +98,6 @@ if ($metode === 'KASIR') {
     $stmt->execute();
 
     $cabang = $stmt->get_result()->fetch_assoc();
-
     $stmt->close();
 
     if (!$cabang) {
@@ -89,7 +120,6 @@ if ($metode === 'KASIR') {
 // =====================================
 
 if ($metode === 'QRIS') {
-
     if (
         !isset($_FILES['bukti_pembayaran']) ||
         $_FILES['bukti_pembayaran']['error'] !== UPLOAD_ERR_OK
@@ -145,15 +175,9 @@ if ($metode === 'QRIS') {
 // =====================================
 
 if ($metode === 'QRIS') {
-    // Menunggu pemeriksaan dan persetujuan Admin.
     $statusPembayaran = 'menunggu_verifikasi';
-
-} elseif ($metode === 'COD') {
-    // Belum dibayar karena pembayaran saat barang diterima.
-    $statusPembayaran = 'belum_bayar';
-
 } else {
-    // Belum dibayar karena pelanggan membayar langsung di kasir.
+    // COD, KASIR, dan DUITKU menunggu pembayaran.
     $statusPembayaran = 'belum_bayar';
 }
 
@@ -164,11 +188,13 @@ $statusPesanan = 'menunggu';
 // =====================================
 
 try {
-
     $conn->begin_transaction();
     $transaksiDimulai = true;
 
-    // Ambil data akun pembeli.
+    // =====================================
+    // AMBIL DATA AKUN PEMBELI
+    // =====================================
+
     $stmt = $conn->prepare(
         "SELECT id_pelanggan
          FROM tbl_users
@@ -180,7 +206,6 @@ try {
     $stmt->execute();
 
     $akun = $stmt->get_result()->fetch_assoc();
-
     $stmt->close();
 
     if (!$akun) {
@@ -194,7 +219,6 @@ try {
     // =====================================
 
     if ($idPelanggan <= 0) {
-
         $stmt = $conn->prepare(
             "INSERT INTO tbl_pelanggan
              (nama_pelanggan, kota)
@@ -205,7 +229,6 @@ try {
         $stmt->execute();
 
         $idPelanggan = $conn->insert_id;
-
         $stmt->close();
 
         $stmt = $conn->prepare(
@@ -219,7 +242,6 @@ try {
         $stmt->close();
 
     } else {
-
         $stmt = $conn->prepare(
             "UPDATE tbl_pelanggan
              SET nama_pelanggan = ?, kota = ?
@@ -236,10 +258,9 @@ try {
     // =====================================
 
     $items = [];
-    $total = 0;
+    $subtotalBelanja = 0;
 
     foreach ($keranjang as $id => $jumlah) {
-
         $id = (int)$id;
         $jumlah = (int)$jumlah;
 
@@ -258,7 +279,6 @@ try {
         $stmt->execute();
 
         $produk = $stmt->get_result()->fetch_assoc();
-
         $stmt->close();
 
         if (!$produk || $jumlah > (int)$produk['stok']) {
@@ -272,7 +292,7 @@ try {
         $harga = (float)$produk['harga'];
         $subtotal = $harga * $jumlah;
 
-        $total += $subtotal;
+        $subtotalBelanja += $subtotal;
 
         $items[] = [
             'id_produk' => (int)$produk['id_produk'],
@@ -283,9 +303,30 @@ try {
         ];
     }
 
+    if ($subtotalBelanja <= 0) {
+        throw new Exception("Total belanja tidak valid.");
+    }
+
+    $ppn = round($subtotalBelanja * 0.11, 2);
+    $total = $subtotalBelanja + $ppn;
+
+    // Duitku menggunakan nominal Rupiah berupa bilangan bulat.
+    if (
+        $metode === 'DUITKU' &&
+        abs($total - round($total)) > 0.0001
+    ) {
+        throw new Exception(
+            "Total pembayaran Duitku harus berupa nominal Rupiah bulat."
+        );
+    }
+
     // =====================================
     // SIMPAN TRANSAKSI
     // =====================================
+
+    $emailDatabase = $metode === 'DUITKU'
+        ? $emailPelanggan
+        : null;
 
     $stmt = $conn->prepare(
         "INSERT INTO tbl_transaksi
@@ -293,6 +334,7 @@ try {
             tanggal,
             id_pelanggan,
             total_belanja,
+            ppn,
             id_user,
             alamat_pengiriman,
             no_hp,
@@ -300,15 +342,17 @@ try {
             status_pembayaran,
             status_pesanan,
             bukti_pembayaran,
+            email_pelanggan,
             id_cabang
         )
-        VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
 
     $stmt->bind_param(
-        "idissssssi",
+        "iddisssssssi",
         $idPelanggan,
         $total,
+        $ppn,
         $idUser,
         $alamat,
         $noHp,
@@ -316,17 +360,17 @@ try {
         $statusPembayaran,
         $statusPesanan,
         $bukti,
+        $emailDatabase,
         $idCabang
     );
 
     $stmt->execute();
 
     $idTransaksi = $conn->insert_id;
-
     $stmt->close();
 
     // =====================================
-    // SIMPAN DETAIL TRANSAKSI
+    // SIMPAN DETAIL TRANSAKSI DAN UPDATE STOK
     // =====================================
 
     $stmtDetail = $conn->prepare(
@@ -350,7 +394,6 @@ try {
     );
 
     foreach ($items as $item) {
-
         $stmtDetail->bind_param(
             "isidid",
             $idTransaksi,
@@ -383,7 +426,208 @@ try {
     $stmtStok->close();
 
     // =====================================
-    // SELESAI
+    // INTEGRASI DUITKU POP SANDBOX
+    // =====================================
+
+    if ($metode === 'DUITKU') {
+        $configDuitkuPath = __DIR__ . "/../../config/duitku.php";
+
+        if (!is_file($configDuitkuPath)) {
+            throw new Exception(
+                "File konfigurasi Duitku tidak ditemukan."
+            );
+        }
+
+        $duitku = require $configDuitkuPath;
+
+        $merchantCode = trim($duitku['merchant_code'] ?? '');
+        $apiKey = trim($duitku['api_key'] ?? '');
+        $sandbox = (bool)($duitku['sandbox'] ?? true);
+
+        $callbackUrl = trim($duitku['callback_url'] ?? '');
+        $returnUrl = trim($duitku['return_url'] ?? '');
+
+        $expiryPeriod = (int)($duitku['expiry_period'] ?? 60);
+
+        if (
+            !$merchantCode ||
+            !$apiKey ||
+            $apiKey === 'ISI_API_KEY_BARU_DI_SINI'
+        ) {
+            throw new Exception(
+                "Konfigurasi Merchant Code atau API Key Duitku belum benar."
+            );
+        }
+
+        if (
+            !$callbackUrl ||
+            strpos($callbackUrl, 'DOMAIN-NGROK') !== false ||
+            !filter_var($callbackUrl, FILTER_VALIDATE_URL) ||
+            !str_starts_with($callbackUrl, 'https://')
+        ) {
+            throw new Exception(
+                "URL callback Duitku belum diatur menggunakan URL publik HTTPS."
+            );
+        }
+
+        if (!filter_var($returnUrl, FILTER_VALIDATE_URL)) {
+            throw new Exception(
+                "URL kembali Duitku belum diatur dengan benar."
+            );
+        }
+
+        if ($expiryPeriod < 5 || $expiryPeriod > 1440) {
+            $expiryPeriod = 60;
+        }
+
+        // ID pesanan unik untuk setiap invoice.
+        $merchantOrderId = 'TK' . $idTransaksi . '-' .
+                           strtoupper(bin2hex(random_bytes(5)));
+
+        // URL kembali ke halaman detail transaksi.
+        $separator = strpos($returnUrl, '?') === false ? '?' : '&';
+
+        $returnUrlTransaksi = $returnUrl . $separator .
+            'id=' . $idTransaksi . '&duitku_return=1';
+
+        $paymentAmount = (int)round($total);
+
+        $productDetails = 'Pembayaran pesanan TokoKu #' .
+                          $idTransaksi;
+
+        // Timestamp dalam milidetik.
+        $timestamp = (string)round(microtime(true) * 1000);
+
+        // Signature Create Invoice Duitku POP.
+        $stringToSign = $merchantCode . $timestamp;
+
+        $signature = hash_hmac(
+            'sha256',
+            $stringToSign,
+            $apiKey
+        );
+
+        $payload = [
+            'paymentAmount' => $paymentAmount,
+            'merchantOrderId' => $merchantOrderId,
+            'productDetails' => $productDetails,
+            'email' => $emailPelanggan,
+            'phoneNumber' => $noHp,
+            'customerVaName' => substr($nama, 0, 20),
+            'paymentMethod' => $duitkuPaymentCode,
+            'callbackUrl' => $callbackUrl,
+            'returnUrl' => $returnUrlTransaksi,
+            'expiryPeriod' => $expiryPeriod
+        ];
+
+        $endpoint = $sandbox
+            ? 'https://api-sandbox.duitku.com/api/merchant/createInvoice'
+            : 'https://api-prod.duitku.com/api/merchant/createInvoice';
+
+        $ch = curl_init($endpoint);
+
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode(
+                $payload,
+                JSON_UNESCAPED_SLASHES
+            ),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => 45,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Accept: application/json',
+                'x-duitku-merchantcode: ' . $merchantCode,
+                'x-duitku-timestamp: ' . $timestamp,
+                'x-duitku-signature: ' . $signature
+            ]
+        ]);
+
+        $response = curl_exec($ch);
+        $curlError = curl_error($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+        curl_close($ch);
+
+        if ($response === false || $curlError) {
+            throw new Exception(
+                "Tidak dapat menghubungi Duitku. Periksa koneksi internet dan ekstensi cURL XAMPP."
+            );
+        }
+
+        $hasilDuitku = json_decode($response, true);
+
+        if (
+            $httpCode !== 200 ||
+            !is_array($hasilDuitku) ||
+            ($hasilDuitku['statusCode'] ?? '') !== '00' ||
+            empty($hasilDuitku['reference']) ||
+            empty($hasilDuitku['paymentUrl'])
+        ) {
+            $pesanDuitku = is_array($hasilDuitku)
+                ? ($hasilDuitku['statusMessage'] ?? 'Respons Duitku tidak valid.')
+                : 'Respons Duitku tidak dapat dibaca.';
+
+            throw new Exception(
+                "Gagal membuat invoice Duitku: " . $pesanDuitku
+            );
+        }
+
+        $reference = trim($hasilDuitku['reference']);
+        $paymentUrl = trim($hasilDuitku['paymentUrl']);
+
+        if (!str_starts_with($paymentUrl, 'https://')) {
+            throw new Exception(
+                "URL pembayaran yang diterima dari Duitku tidak valid."
+            );
+        }
+
+        // Simpan waktu kedaluwarsa invoice.
+        $tanggalKedaluwarsa = date(
+            'Y-m-d H:i:s',
+            time() + ($expiryPeriod * 60)
+        );
+
+        // Simpan data invoice Duitku ke database.
+        $stmtUpdate = $conn->prepare(
+            "UPDATE tbl_transaksi
+             SET email_pelanggan = ?,
+                 merchant_order_id = ?,
+                 duitku_reference = ?,
+                 duitku_payment_code = ?,
+                 duitku_payment_url = ?,
+                 duitku_expiry = ?
+             WHERE id_transaksi = ?
+               AND id_user = ?
+               AND metode_pembayaran = 'DUITKU'"
+        );
+
+        $stmtUpdate->bind_param(
+            "ssssssii",
+            $emailPelanggan,
+            $merchantOrderId,
+            $reference,
+            $duitkuPaymentCode,
+            $paymentUrl,
+            $tanggalKedaluwarsa,
+            $idTransaksi,
+            $idUser
+        );
+
+        $stmtUpdate->execute();
+
+        if ($stmtUpdate->affected_rows < 0) {
+            throw new Exception(
+                "Gagal menyimpan informasi invoice Duitku."
+            );
+        }
+
+        $stmtUpdate->close();
+    }
+
+    // =====================================
+    // COMMIT TRANSAKSI
     // =====================================
 
     $conn->commit();
@@ -399,7 +643,6 @@ try {
     exit;
 
 } catch (Throwable $e) {
-
     if ($transaksiDimulai) {
         $conn->rollback();
     }
@@ -407,6 +650,12 @@ try {
     if ($fileTersimpan && is_file($fileTersimpan)) {
         unlink($fileTersimpan);
     }
+
+    // Catat detail error di log server, bukan menampilkan API Key.
+    error_log(
+        "[TokoKu Checkout] " .
+        $e->getMessage()
+    );
 
     kembaliCheckout($e->getMessage());
 }
